@@ -14,7 +14,7 @@ permissions:
 env:
   PROJECT_ID: oxford-cdr-report-tao
   PROJECT_NUMBER: "915508939426"
-  REGION: asia-south1
+  REGION: us-central1
   ARTIFACT_REPOSITORY: cdr-platform
   SERVICE: csi-cdr-backend
   FRONTEND_SERVICE: csi-cdr-frontend
