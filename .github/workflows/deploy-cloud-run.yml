@@ -1,0 +1,88 @@
+name: Deploy backend to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: oxford-cdr-report-tao
+  PROJECT_NUMBER: "915508939426"
+  REGION: asia-south1
+  ARTIFACT_REPOSITORY: cdr-platform
+  SERVICE: csi-cdr-backend
+  FRONTEND_SERVICE: csi-cdr-frontend
+  RUNTIME_SERVICE_ACCOUNT: csi-cdr-runtime@oxford-cdr-report-tao.iam.gserviceaccount.com
+  DEPLOY_SERVICE_ACCOUNT: github-deployer@oxford-cdr-report-tao.iam.gserviceaccount.com
+  WORKLOAD_IDENTITY_PROVIDER: projects/915508939426/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build app
+        run: npm run build
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Resolve frontend URL
+        run: |
+          if FRONTEND_URL="$(gcloud run services describe "${FRONTEND_SERVICE}" --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.url)' 2>/dev/null)"; then
+            echo "API_CORS_ORIGINS=${FRONTEND_URL}" >> "${GITHUB_ENV}"
+          else
+            echo "API_CORS_ORIGINS=https://frontend-not-deployed.invalid" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Build and push image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPOSITORY}/backend:${GITHUB_SHA}"
+          docker build --tag "${IMAGE}" .
+          docker push "${IMAGE}"
+          echo "IMAGE=${IMAGE}" >> "${GITHUB_ENV}"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "${SERVICE}" \
+            --project "${PROJECT_ID}" \
+            --region "${REGION}" \
+            --platform managed \
+            --image "${IMAGE}" \
+            --service-account "${RUNTIME_SERVICE_ACCOUNT}" \
+            --allow-unauthenticated \
+            --port 8080 \
+            --min-instances 1 \
+            --set-env-vars "GCP_PROJECT_ID=${PROJECT_ID},GCS_BUCKET=csi-cdr-uploads,API_CORS_ORIGINS=${API_CORS_ORIGINS},COOKIE_SECURE=true,COOKIE_SAME_SITE=lax" \
+            --update-secrets "DATABASE_URL=csi-cdr-database-url:latest,JWT_SECRET=csi-cdr-jwt-secret:latest"
