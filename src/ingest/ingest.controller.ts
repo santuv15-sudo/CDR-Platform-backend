@@ -38,9 +38,15 @@ export class IngestController {
     return this.ingest.issues(batchId, issueType);
   }
 
+  @Get("deletion-log")
+  @Roles("superadmin", "executive")
+  deletionLog() {
+    return this.ingest.deletionLog();
+  }
+
   @Delete("batches/:id")
   @Roles("superadmin", "executive")
-  deleteBatch(@Param("id") id: string) {
-    return this.ingest.deleteBatch(id);
+  deleteBatch(@Param("id") id: string, @CurrentUserParam() user: CurrentUser) {
+    return this.ingest.deleteBatch(id, user.id);
   }
 }

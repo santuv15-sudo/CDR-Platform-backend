@@ -56,4 +56,12 @@ export class AdminController {
   deleteMapping(@Query("staff_id") staffId?: string, @Query("branch_id") branchId?: string) {
     return this.admin.deleteMapping(staffId, branchId);
   }
+
+  // Assign one or more previously-unmapped CDR user names to a branch. Creates/aliases
+  // a staff record so future imports resolve them, and re-resolves existing rows.
+  @Post("remap-cdr-user")
+  @Roles("superadmin", "executive")
+  remapCdrUser(@Body() body: unknown) {
+    return this.admin.remapCdrUser(body as any);
+  }
 }

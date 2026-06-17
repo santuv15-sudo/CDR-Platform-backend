@@ -35,7 +35,19 @@ export class IngestService {
         u.name AS uploaded_by_name
       FROM ingestion_batches b
       LEFT JOIN app_users u ON u.id = b.uploaded_by
+      WHERE b.deleted_at IS NULL
       ORDER BY b.created_at DESC
+      LIMIT 100
+    `;
+  }
+
+  async deletionLog() {
+    return db()`
+      SELECT d.id, d.batch_id, d.file_name, d.kind, d.rows_archived, d.deleted_at,
+             u.name AS deleted_by_name
+      FROM deletion_log d
+      LEFT JOIN app_users u ON u.id = d.deleted_by
+      ORDER BY d.deleted_at DESC
       LIMIT 100
     `;
   }
@@ -52,11 +64,34 @@ export class IngestService {
     `;
   }
 
-  async deleteBatch(batchId: string) {
+  /**
+   * Delete an uploaded batch. The CDR rows are moved into cdr_records_archive
+   * (queryable directly in Supabase), then removed from the live table along with
+   * their ingestion issues. A row is written to deletion_log so the app can show a
+   * deletion audit trail without retaining the deleted records themselves.
+   */
+  async deleteBatch(batchId: string, deletedBy?: string) {
+    let archived = 0;
     await db().begin(async (sql) => {
-      await sql`UPDATE cdr_records SET deleted_at = now() WHERE batch_id = ${batchId}::uuid`;
-      await sql`UPDATE ingestion_batches SET deleted_at = now(), status = 'completed' WHERE id = ${batchId}::uuid`;
+      const batch = await sql`SELECT file_name, kind FROM ingestion_batches WHERE id = ${batchId}::uuid`;
+      const meta = (batch[0] ?? {}) as { file_name?: string; kind?: string };
+
+      const ins = await sql`
+        INSERT INTO cdr_records_archive
+        SELECT c.*, now(), ${deletedBy ?? null}::uuid
+        FROM cdr_records c
+        WHERE c.batch_id = ${batchId}::uuid
+      `;
+      archived = ins.count ?? 0;
+
+      await sql`DELETE FROM cdr_records WHERE batch_id = ${batchId}::uuid`;
+      await sql`DELETE FROM ingestion_issues WHERE batch_id = ${batchId}::uuid`;
+      await sql`
+        INSERT INTO deletion_log (batch_id, file_name, kind, rows_archived, deleted_by)
+        VALUES (${batchId}::uuid, ${meta.file_name ?? null}, ${meta.kind ?? null}, ${archived}, ${deletedBy ?? null}::uuid)
+      `;
+      await sql`DELETE FROM ingestion_batches WHERE id = ${batchId}::uuid`;
     });
-    return { ok: true };
+    return { ok: true, archived };
   }
 }
