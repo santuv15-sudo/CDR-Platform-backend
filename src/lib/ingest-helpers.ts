@@ -5,6 +5,7 @@ export const CDR_HEADER_KEYWORDS: Record<string, string[]> = {
   user: ["user name", "agent name", "employee", "staff", "agent", "seat", "login", "extension", "user"],
   direction: ["direction", "call direction", "call type", "type"],
   answered: ["answer indicator", "answered", "answer", "connected", "status", "result", "disposition"],
+  answered_ext: ["answered by extension", "answered extension", "answer extension", "answered ext"],
   duration: ["duration (hh:mm:ss)", "duration", "talk time", "length", "handle time", "dur"],
   date: ["start date (mm/dd/yyyy)", "start date", "call date", "date (mm/dd/yyyy)", "date"],
   time: ["start time (hh:mm:ss) central", "start time", "call time", "time"],

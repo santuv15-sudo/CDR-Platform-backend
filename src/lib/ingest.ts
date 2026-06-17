@@ -15,17 +15,19 @@ import {
   readRows,
 } from "./ingest-helpers";
 
-const ANSWERED_TOKENS = new Set([
-  "answered",
-  "answer",
-  "connected",
-  "connect",
-  "yes",
-  "y",
-  "true",
-  "1",
-  "answered after disposition",
-]);
+const ANSWERED_TOKENS = new Set(["yes", "y", "true", "1"]);
+
+/**
+ * A call counts as answered when the Answer Indicator is an affirmative value.
+ * The provider emits compound values like "Yes-PostRedirection" / "Yes-Direct" and
+ * "Answered After Disposition", so we prefix-match rather than require an exact token.
+ */
+function isAnswered(value: string): boolean {
+  const v = norm(value);
+  if (!v) return false;
+  if (v.startsWith("yes") || v.startsWith("answer") || v.startsWith("connect")) return true;
+  return ANSWERED_TOKENS.has(v);
+}
 
 export { parseDurationToSecs } from "./duration";
 export {
@@ -305,10 +307,22 @@ export async function ingestCdr(
     WHERE active = true
   `) as StaffMatch[];
 
+  // Branch directory used to resolve hunt-group / auto-attendant rows to a branch.
+  const branchRows = (await sql`SELECT id, name, dm_id FROM branches WHERE active = true`) as { id: number; name: string; dm_id: number | null }[];
+  const branchByNorm = branchRows.map((b) => ({ id: b.id, name: b.name, dm_id: b.dm_id, norm: norm(b.name).replace(/\s+/g, "") }));
+  const branchById = new Map<number, { id: number; name: string; dm_id: number | null }>(branchRows.map((b) => [b.id, b]));
+
   let failed = 0;
   let system = 0;
   let unmapped = 0;
-  const issues: Array<{ type: string; severity?: string; rowNumber?: number; rawUser?: string; message: string; payload?: unknown }> = [];
+  type Issue = { type: string; severity?: string; rowNumber?: number; rawUser?: string; message: string; payload?: unknown };
+  const issues: Issue[] = [];
+  // Keep the stored diagnostics bounded. A large CDR file can have tens of thousands
+  // of skipped/unmapped rows; retaining a full row payload for every one of them
+  // exhausts memory. We still count every row accurately (failed/system/unmapped),
+  // but only persist a capped sample of issue detail.
+  const ISSUE_CAP = 2000;
+  const pushIssue = (i: Issue) => { if (issues.length < ISSUE_CAP) issues.push(i); };
   const now = new Date().toISOString();
 
   const payloads = rows.flatMap((r, index) => {
@@ -316,7 +330,7 @@ export async function ingestCdr(
     const direction = normalizeDirection(cell(r, cols.direction));
     if (!direction) {
       failed++;
-      issues.push({
+      pushIssue({
         type: "invalid_cdr_row",
         severity: "high",
         rowNumber: index + 2,
@@ -332,23 +346,54 @@ export async function ingestCdr(
     if (!userVal) {
       userVal = direction === "Inbound" ? phoneDigits(called).slice(-7) : phoneDigits(calling).slice(-7);
     }
+    // Hunt Group / Auto Attendant / Main rows: resolve to an agent or branch before
+    // discarding, mirroring the dashboard logic — (1) Answered-By-Extension -> agent,
+    // (2) branch name contained in the group name -> branch, (3) Called-TN extension ->
+    // that agent's branch, (4) synthetic HG-Seat from any phone number. Skip only when
+    // there is no usable phone number at all.
+    let resolvedStaff: StaffMatch | null = null;
+    let hgBranchId: number | null = null;
+    let hgDmId: number | null = null;
     if (userVal && isSystemUser(userVal)) {
-      system++;
-      issues.push({
-        type: "system_cdr_row",
-        severity: "low",
-        rowNumber: index + 2,
-        rawUser: userVal,
-        message: "System or hunt-group row skipped.",
-        payload: issuePayload(r),
-      });
-      return [];
+      resolvedStaff = findStaff("", cell(r, cols.answered_ext), staffRows);
+      if (!resolvedStaff) {
+        const hgL = norm(userVal).replace(/\s+/g, "");
+        const b = branchByNorm.find((x) => x.norm.length >= 3 && hgL.includes(x.norm));
+        if (b) { hgBranchId = b.id; hgDmId = b.dm_id; userVal = `HG-${b.name}`; }
+      }
+      if (!resolvedStaff && hgBranchId === null) {
+        const s = findStaff("", called ?? "", staffRows);
+        if (s) {
+          hgBranchId = s.branch_id;
+          hgDmId = s.dm_id;
+          userVal = `HG-${(s.branch_id != null && branchById.get(s.branch_id)?.name) || s.branch_id}`;
+        }
+      }
+      if (!resolvedStaff && hgBranchId === null) {
+        const tnFb = phoneDigits(called) || phoneDigits(calling);
+        if (tnFb) {
+          userVal = `HG-Seat-${tnFb.slice(-5)}`;
+        } else {
+          system++;
+          pushIssue({
+            type: "system_cdr_row",
+            severity: "low",
+            rowNumber: index + 2,
+            rawUser: userVal,
+            message: "System/hunt-group row with no phone number skipped.",
+            payload: issuePayload(r),
+          });
+          return [];
+        }
+      }
     }
 
-    const staff = findStaff(userVal, direction === "Inbound" ? called ?? "" : calling ?? "", staffRows);
-    if (!staff) {
+    const staff = resolvedStaff ?? (hgBranchId === null
+      ? findStaff(userVal, direction === "Inbound" ? called ?? "" : calling ?? "", staffRows)
+      : null);
+    if (!staff && hgBranchId === null) {
       unmapped++;
-      issues.push({
+      pushIssue({
         type: "unmapped_cdr_user",
         severity: "high",
         rowNumber: index + 2,
@@ -362,7 +407,7 @@ export async function ingestCdr(
     const callDate = normalizeDateString(cell(r, cols.date)) ?? normalizeDateString(sourceDate);
     const timeVal = cell(r, cols.time) || null;
     const hour = timeVal && /^\d{1,2}:/.test(timeVal) ? Number.parseInt(timeVal.split(":")[0], 10) : null;
-    const answered = ANSWERED_TOKENS.has(norm(cell(r, cols.answered)));
+    const answered = isAnswered(cell(r, cols.answered));
     const dur = parseDurationToSecs(cell(r, cols.duration));
     const localCallId = cell(r, cols.local_call_id) || null;
     const remoteCallId = cell(r, cols.remote_call_id) || null;
@@ -381,8 +426,8 @@ export async function ingestCdr(
       calling_tn: calling,
       called_tn: called,
       staff_id: staff?.id ?? null,
-      branch_id: staff?.branch_id ?? null,
-      dm_id: staff?.dm_id ?? null,
+      branch_id: staff?.branch_id ?? hgBranchId ?? null,
+      dm_id: staff?.dm_id ?? hgDmId ?? null,
       source_file: fileName,
       batch_id: batchId,
       raw_user_name: userVal || null,
@@ -397,8 +442,23 @@ export async function ingestCdr(
 
   let inserted = 0;
   let duplicates = 0;
+
+  // De-duplicate within the file by dedup_key first: a single multi-row INSERT
+  // cannot tolerate the same ON CONFLICT key appearing twice in one statement.
+  const seen = new Set<string>();
+  const unique = payloads.filter((row) => {
+    if (seen.has(row.dedup_key)) { duplicates++; return false; }
+    seen.add(row.dedup_key);
+    return true;
+  });
+
+  // Bulk insert in chunks. Each chunk is sent as a single JSON parameter and
+  // expanded server-side via json_to_recordset — one round-trip per ~2000 rows
+  // instead of one per row, which is what makes a 100k+ row file feasible.
+  const CHUNK = 5000;
   try {
-    for (const row of payloads) {
+    for (let i = 0; i < unique.length; i += CHUNK) {
+      const chunk = unique.slice(i, i + CHUNK);
       const result = await sql`
         INSERT INTO cdr_records (
           call_date, call_time, direction, call_result, answered, duration_secs, hour,
@@ -406,28 +466,25 @@ export async function ingestCdr(
           raw_user_name, caller_id_name, local_call_id, remote_call_id, raw_payload,
           dedup_key, ingested_at
         )
-        VALUES (
-          ${row.call_date}::date, ${row.call_time}, ${row.direction}::call_direction, ${row.call_result},
-          ${row.answered}, ${row.duration_secs}, ${row.hour},
-          ${row.calling_tn}, ${row.called_tn}, ${row.staff_id}, ${row.branch_id}, ${row.dm_id},
-          ${row.source_file}, ${row.batch_id}::uuid, ${row.raw_user_name}, ${row.caller_id_name},
-          ${row.local_call_id}, ${row.remote_call_id}, ${JSON.stringify(row.raw_payload)}::jsonb,
-          ${row.dedup_key}, ${row.ingested_at}
+        SELECT
+          x.call_date::date, x.call_time, x.direction::call_direction, x.call_result,
+          x.answered, x.duration_secs, x.hour,
+          x.calling_tn, x.called_tn, x.staff_id, x.branch_id, x.dm_id,
+          x.source_file, x.batch_id::uuid, x.raw_user_name, x.caller_id_name,
+          x.local_call_id, x.remote_call_id, x.raw_payload,
+          x.dedup_key, x.ingested_at::timestamptz
+        FROM jsonb_to_recordset(${sql.json(chunk as never)}) AS x(
+          call_date text, call_time text, direction text, call_result text, answered boolean,
+          duration_secs int, hour int, calling_tn text, called_tn text, staff_id int,
+          branch_id int, dm_id int, source_file text, batch_id text, raw_user_name text,
+          caller_id_name text, local_call_id text, remote_call_id text, raw_payload jsonb,
+          dedup_key text, ingested_at text
         )
         ON CONFLICT (dedup_key) DO NOTHING
-        RETURNING id
+        RETURNING dedup_key
       `;
-      if (result.length) inserted++;
-      else {
-        duplicates++;
-        issues.push({
-          type: "duplicate_cdr_row",
-          severity: "medium",
-          rawUser: row.raw_user_name ?? undefined,
-          message: "Duplicate CDR row skipped.",
-          payload: { dedup_key: row.dedup_key, source_file: fileName },
-        });
-      }
+      inserted += result.length;
+      duplicates += chunk.length - result.length;
     }
     await insertIssues(batchId, issues);
   } catch (e) {

@@ -136,4 +136,60 @@ export class AdminService {
     else throw new BadRequestException("staff_id or branch_id is required");
     return { ok: true };
   }
+
+  /**
+   * Assign previously-unmapped CDR user names to a branch. For each name we find or
+   * create a staff record in that branch (with the name as a cdr_alias), then point
+   * the matching unmapped cdr_records rows at it. Future imports resolve by the alias.
+   */
+  async remapCdrUser(body: { raw_users?: string[]; raw_user?: string; branch_id?: number }) {
+    const names = (body.raw_users ?? (body.raw_user ? [body.raw_user] : [])).filter(Boolean);
+    const branchId = body.branch_id;
+    if (!names.length || !branchId) {
+      throw new BadRequestException("raw_users (or raw_user) and branch_id are required");
+    }
+    const sql = db();
+    const branchRows = await sql`SELECT id, dm_id FROM branches WHERE id = ${branchId} LIMIT 1`;
+    if (!branchRows.length) throw new BadRequestException("branch not found");
+    const dmId = (branchRows[0].dm_id as number | null) ?? null;
+
+    let remapped = 0;
+    let mapped = 0;
+    await sql.begin(async (tx) => {
+      for (const rawUser of names) {
+        const existing = await tx`
+          SELECT id FROM staff
+          WHERE branch_id = ${branchId} AND (name = ${rawUser} OR ${rawUser} = ANY(cdr_aliases))
+          LIMIT 1
+        `;
+        let staffId: number;
+        if (existing.length) {
+          staffId = existing[0].id as number;
+          await tx`
+            UPDATE staff
+            SET cdr_aliases = (SELECT array(SELECT DISTINCT unnest(cdr_aliases || ARRAY[${rawUser}]::text[]))),
+                active = true, updated_at = now()
+            WHERE id = ${staffId}
+          `;
+        } else {
+          const username = rawUser.toLowerCase().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "");
+          const ins = await tx`
+            INSERT INTO staff (name, username, extension, branch_id, dm_id, cdr_aliases, active)
+            VALUES (${rawUser}, ${username || null}, ${null}, ${branchId}, ${dmId}, ${[rawUser]}, true)
+            RETURNING id
+          `;
+          staffId = ins[0].id as number;
+        }
+        const upd = await tx`
+          UPDATE cdr_records
+          SET staff_id = ${staffId}, branch_id = ${branchId}, dm_id = ${dmId}
+          WHERE raw_user_name = ${rawUser} AND staff_id IS NULL AND deleted_at IS NULL
+        `;
+        remapped += upd.count ?? 0;
+        mapped += 1;
+        await tx`DELETE FROM ingestion_issues WHERE issue_type = 'unmapped_cdr_user' AND raw_user = ${rawUser}`;
+      }
+    });
+    return { ok: true, names: mapped, remapped };
+  }
 }
