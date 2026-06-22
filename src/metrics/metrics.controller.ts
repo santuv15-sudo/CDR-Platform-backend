@@ -25,6 +25,21 @@ export class MetricsController {
     return this.metrics.hourly(user, req);
   }
 
+  @Get("duration-distribution")
+  durationDistribution(@CurrentUserParam() user: CurrentUser, @Req() req: Request) {
+    return this.metrics.durationDistribution(user, req);
+  }
+
+  @Get("heatmap")
+  heatmap(@CurrentUserParam() user: CurrentUser, @Req() req: Request) {
+    return this.metrics.heatmap(user, req);
+  }
+
+  @Get("analytics")
+  analytics(@CurrentUserParam() user: CurrentUser, @Req() req: Request) {
+    return this.metrics.analytics(user, req);
+  }
+
   @Get("branches")
   branches(@CurrentUserParam() user: CurrentUser, @Req() req: Request) {
     return this.metrics.branches(user, req);

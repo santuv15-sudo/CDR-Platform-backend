@@ -14,11 +14,15 @@ export type RequestLike = {
 export interface CurrentUser {
   id: string;
   name: string;
+  username: string | null;
   role: string;
   staffId: number | null;
   allowedBranches: number[];
   isAllBranches: boolean;
+  pageAccess: string[];
 }
+
+const ALL_PAGES = ["executive", "manager", "agents", "myperformance", "cdr", "mapping", "upload", "users"];
 
 export class AuthError extends Error {
   status: number;
@@ -52,17 +56,19 @@ function bearer(req: RequestLike): string {
 
 interface AppUserRow {
   id: string;
-  email: string;
+  email: string | null;
+  username: string | null;
   name: string;
   role: string;
   staff_id: number | null;
   branches_managed: number[] | null;
+  page_access: string[] | null;
   active: boolean;
 }
 
 async function loadUser(sub: string): Promise<AppUserRow> {
   const rows = await db()`
-    SELECT id, email, name, role, staff_id, branches_managed, active
+    SELECT id, email, username, name, role, staff_id, branches_managed, page_access, active
     FROM app_users
     WHERE id = ${sub}::uuid
     LIMIT 1
@@ -84,16 +90,21 @@ export async function getCurrentUser(req: RequestLike): Promise<CurrentUser> {
   }
 
   const profile = await loadUser(sub);
+  // Superadmin can never be locked out of any page; everyone else is gated by their
+  // explicit page_access allow-list (UI-only enforcement on the frontend).
+  const pageAccess = profile.role === "superadmin" ? ALL_PAGES : (profile.page_access ?? []);
 
   if (ALL_ACCESS_ROLES.has(profile.role)) {
     const branches = await db()`SELECT id FROM branches`;
     return {
       id: sub,
       name: profile.name,
+      username: profile.username,
       role: profile.role,
       staffId: profile.staff_id,
       allowedBranches: branches.map((b) => b.id as number),
       isAllBranches: true,
+      pageAccess,
     };
   }
 
@@ -101,10 +112,12 @@ export async function getCurrentUser(req: RequestLike): Promise<CurrentUser> {
     return {
       id: sub,
       name: profile.name,
+      username: profile.username,
       role: profile.role,
       staffId: profile.staff_id,
       allowedBranches: profile.branches_managed ?? [],
       isAllBranches: false,
+      pageAccess,
     };
   }
 
@@ -120,31 +133,33 @@ export async function getCurrentUser(req: RequestLike): Promise<CurrentUser> {
   return {
     id: sub,
     name: profile.name,
+    username: profile.username,
     role: profile.role,
     staffId: profile.staff_id,
     allowedBranches: branchIds,
     isAllBranches: false,
+    pageAccess,
   };
 }
 
 export async function authenticateUser(
-  email: string,
+  username: string,
   password: string,
 ): Promise<{ id: string; accessToken: string }> {
   const rows = await db()`
     SELECT id, password_hash
     FROM app_users
-    WHERE email = ${email}
+    WHERE lower(username) = lower(${username})
       AND active = true
     LIMIT 1
   `;
   const user = rows[0] as { id: string; password_hash: string } | undefined;
   if (!user?.password_hash) {
-    throw new AuthError("Invalid email or password");
+    throw new AuthError("Invalid username or password");
   }
 
   const ok = await bcrypt.compare(password, user.password_hash);
-  if (!ok) throw new AuthError("Invalid email or password");
+  if (!ok) throw new AuthError("Invalid username or password");
 
   await db()`UPDATE app_users SET last_login_at = now(), updated_at = now() WHERE id = ${user.id}::uuid`;
   const accessToken = await signAccessToken(user.id);

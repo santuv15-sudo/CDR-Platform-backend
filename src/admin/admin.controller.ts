@@ -64,4 +64,16 @@ export class AdminController {
   remapCdrUser(@Body() body: unknown) {
     return this.admin.remapCdrUser(body as any);
   }
+
+  @Get("unmapped-cdr")
+  @Roles("superadmin", "executive", "district_manager")
+  unmappedCdr(@Query("missing") missing?: string) {
+    return this.admin.unmappedCdr(missing ?? "staff");
+  }
+
+  @Get("mapping-coverage")
+  @Roles("superadmin", "executive", "district_manager")
+  mappingCoverage() {
+    return this.admin.mappingCoverage();
+  }
 }

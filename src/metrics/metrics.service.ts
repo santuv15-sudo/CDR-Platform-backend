@@ -3,12 +3,15 @@ import type { Request } from "express";
 import type { CurrentUser } from "../lib/auth";
 import {
   metricsAgents,
+  metricsAnalytics,
   metricsBranches,
   metricsCoaching,
   metricsCoverage,
   metricsDaily,
+  metricsDurationDistribution,
   metricsFilterOptions,
   metricsHealth,
+  metricsHeatmap,
   metricsHourly,
   metricsKpis,
   metricsManager,
@@ -31,6 +34,18 @@ export class MetricsService {
 
   hourly(user: CurrentUser, req: Request) {
     return metricsHourly(user, parseFilters(req));
+  }
+
+  durationDistribution(user: CurrentUser, req: Request) {
+    return metricsDurationDistribution(user, parseFilters(req));
+  }
+
+  heatmap(user: CurrentUser, req: Request) {
+    return metricsHeatmap(user, parseFilters(req));
+  }
+
+  analytics(user: CurrentUser, req: Request) {
+    return metricsAnalytics(user, parseFilters(req));
   }
 
   branches(user: CurrentUser, req: Request) {
