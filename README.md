@@ -1,4 +1,4 @@
-# CSI CDR Backend NestJS
+# CSI CDR Backend - NestJS
 
 This is the NestJS backend replacement for the original `backend/` Next.js API service. It preserves the same public API paths so the existing frontend can point `BACKEND_API_URL` at this service.
 
