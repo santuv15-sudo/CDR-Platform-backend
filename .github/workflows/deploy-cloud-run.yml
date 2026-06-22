@@ -1,7 +1,8 @@
-name: Deploy backend to Cloud Run
+name: Backend CI/CD
 
 on:
   push:
+  pull_request:
     branches:
       - main
       - master
@@ -9,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   PROJECT_ID: oxford-cdr-report-tao
@@ -23,8 +23,8 @@ env:
   WORKLOAD_IDENTITY_PROVIDER: projects/915508939426/locations/global/workloadIdentityPools/github-pool/providers/github-provider
 
 jobs:
-  deploy:
-    name: Build and deploy
+  ci:
+    name: Test and build
     runs-on: ubuntu-latest
 
     steps:
@@ -45,6 +45,22 @@ jobs:
 
       - name: Build app
         run: npm run build
+
+  deploy:
+    name: Deploy to Cloud Run
+    needs: ci
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
