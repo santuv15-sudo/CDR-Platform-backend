@@ -29,7 +29,7 @@ export async function metricsDaily(user: CurrentUser, f: MetricFilters) {
   const where = cdrWhere(sql, user, f);
   return sql`
     SELECT
-      c.call_date,
+      to_char(c.call_date, 'YYYY-MM-DD') AS call_date,
       count(*)::bigint AS total,
       count(*) FILTER (WHERE direction = 'Inbound')::bigint AS inbound,
       count(*) FILTER (WHERE direction = 'Outbound')::bigint AS outbound,
@@ -62,6 +62,86 @@ export async function metricsHourly(user: CurrentUser, f: MetricFilters) {
     GROUP BY c.hour
     ORDER BY c.hour
   `;
+}
+
+export async function metricsDurationDistribution(user: CurrentUser, f: MetricFilters) {
+  const sql = db();
+  const where = cdrWhere(sql, user, f);
+  return sql`
+    SELECT
+      to_char(c.call_date, 'YYYY-MM-DD') AS call_date,
+      count(*) FILTER (WHERE c.duration_secs < 1200)::int AS under_20,
+      count(*) FILTER (WHERE c.duration_secs >= 1200 AND c.duration_secs < 1800)::int AS m20_30,
+      count(*) FILTER (WHERE c.duration_secs >= 1800 AND c.duration_secs < 2400)::int AS m30_40,
+      count(*) FILTER (WHERE c.duration_secs >= 2400 AND c.duration_secs < 3000)::int AS m40_50,
+      count(*) FILTER (WHERE c.duration_secs >= 3000)::int AS m50_plus
+    FROM cdr_records c
+    WHERE ${where} AND c.answered = true AND c.call_date IS NOT NULL
+    GROUP BY c.call_date
+    ORDER BY c.call_date
+  `;
+}
+
+export async function metricsHeatmap(user: CurrentUser, f: MetricFilters) {
+  const sql = db();
+  const where = cdrWhere(sql, user, f);
+  return sql`
+    SELECT to_char(c.call_date, 'YYYY-MM-DD') AS call_date, c.hour, count(*)::int AS calls
+    FROM cdr_records c
+    WHERE ${where} AND c.call_date IS NOT NULL AND c.hour IS NOT NULL
+    GROUP BY c.call_date, c.hour
+    ORDER BY c.call_date, c.hour
+  `;
+}
+
+export async function metricsAnalytics(user: CurrentUser, f: MetricFilters) {
+  const sql = db();
+  // Analytics shows both directions side by side, so ignore any direction filter.
+  const where = cdrWhere(sql, user, { ...f, direction: null });
+
+  const [inOut, outOut, lin, lout, topIn, topOut] = await Promise.all([
+    sql`SELECT
+          count(*)::int AS total,
+          count(*) FILTER (WHERE answered)::int AS answered,
+          count(*) FILTER (WHERE answered AND call_result ILIKE '%extension%')::int AS after_disposition,
+          count(*) FILTER (WHERE NOT answered)::int AS unanswered
+        FROM cdr_records c WHERE ${where} AND c.direction = 'Inbound'::call_direction`,
+    sql`SELECT
+          count(*)::int AS total,
+          count(*) FILTER (WHERE answered)::int AS answered,
+          count(*) FILTER (WHERE NOT answered)::int AS no_response
+        FROM cdr_records c WHERE ${where} AND c.direction = 'Outbound'::call_direction`,
+    sql`SELECT c.duration_secs::int AS duration_secs, c.calling_tn AS external_tn,
+          to_char(c.call_date, 'YYYY-MM-DD') AS call_date, s.name AS staff_name
+        FROM cdr_records c LEFT JOIN staff s ON s.id = c.staff_id
+        WHERE ${where} AND c.direction = 'Inbound'::call_direction
+        ORDER BY c.duration_secs DESC NULLS LAST LIMIT 1`,
+    sql`SELECT c.duration_secs::int AS duration_secs, c.called_tn AS external_tn,
+          to_char(c.call_date, 'YYYY-MM-DD') AS call_date, s.name AS staff_name
+        FROM cdr_records c LEFT JOIN staff s ON s.id = c.staff_id
+        WHERE ${where} AND c.direction = 'Outbound'::call_direction
+        ORDER BY c.duration_secs DESC NULLS LAST LIMIT 1`,
+    sql`SELECT c.calling_tn AS tn, count(*)::int AS calls, sum(c.duration_secs)::bigint AS total_dur,
+          round(avg(c.duration_secs))::int AS avg_dur, max(c.duration_secs)::int AS max_dur,
+          string_agg(DISTINCT b.name, ', ') AS branches
+        FROM cdr_records c LEFT JOIN branches b ON b.id = c.branch_id
+        WHERE ${where} AND c.direction = 'Inbound'::call_direction AND c.calling_tn IS NOT NULL AND c.calling_tn <> ''
+        GROUP BY c.calling_tn ORDER BY total_dur DESC NULLS LAST LIMIT 10`,
+    sql`SELECT c.called_tn AS tn, count(*)::int AS calls, sum(c.duration_secs)::bigint AS total_dur,
+          round(avg(c.duration_secs))::int AS avg_dur, max(c.duration_secs)::int AS max_dur,
+          string_agg(DISTINCT b.name, ', ') AS branches
+        FROM cdr_records c LEFT JOIN branches b ON b.id = c.branch_id
+        WHERE ${where} AND c.direction = 'Outbound'::call_direction AND c.called_tn IS NOT NULL AND c.called_tn <> ''
+        GROUP BY c.called_tn ORDER BY total_dur DESC NULLS LAST LIMIT 10`,
+  ]);
+
+  return {
+    outcomes: { inbound: inOut[0] ?? null, outbound: outOut[0] ?? null },
+    longest_inbound: lin[0] ?? null,
+    longest_outbound: lout[0] ?? null,
+    top_duration_inbound: topIn,
+    top_duration_outbound: topOut,
+  };
 }
 
 export async function metricsBranches(user: CurrentUser, f: MetricFilters) {
@@ -140,7 +220,7 @@ export async function metricsRecords(user: CurrentUser, f: MetricFilters) {
   const off = offset(f);
   const rows = await sql`
     SELECT
-      c.id, c.call_date, c.call_time, c.hour, c.direction, c.answered, c.duration_secs,
+      c.id, to_char(c.call_date, 'YYYY-MM-DD') AS call_date, c.call_time, c.hour, c.direction, c.answered, c.duration_secs,
       c.calling_tn, c.called_tn, c.caller_id_name, c.raw_user_name,
       c.local_call_id, c.remote_call_id, c.source_file,
       s.id AS staff_id, COALESCE(s.name, c.raw_user_name) AS staff_name,
@@ -379,7 +459,7 @@ export async function metricsFilterOptions(user: CurrentUser) {
     direction: null, outcome: null, search: null, page: 1, page_size: 50,
   });
   const [dates, dms, branches, staff] = await Promise.all([
-    sql`SELECT DISTINCT call_date FROM cdr_records c WHERE ${scope} AND call_date IS NOT NULL ORDER BY call_date DESC`,
+    sql`SELECT DISTINCT to_char(call_date, 'YYYY-MM-DD') AS call_date FROM cdr_records c WHERE ${scope} AND call_date IS NOT NULL ORDER BY 1 DESC`,
     sql`SELECT DISTINCT dm.id, dm.name FROM cdr_records c JOIN district_managers dm ON dm.id = c.dm_id WHERE ${scope} ORDER BY dm.name`,
     sql`SELECT DISTINCT b.id, b.name, b.dm_id FROM cdr_records c JOIN branches b ON b.id = c.branch_id WHERE ${scope} ORDER BY b.name`,
     sql`SELECT DISTINCT s.id, s.name, s.branch_id, s.dm_id FROM cdr_records c JOIN staff s ON s.id = c.staff_id WHERE ${scope} ORDER BY s.name`,

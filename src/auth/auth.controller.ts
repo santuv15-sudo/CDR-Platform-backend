@@ -10,7 +10,7 @@ export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
   @Post("api/auth/login")
-  async login(@Body() body: { email?: string; password?: string }, @Res({ passthrough: true }) res: Response) {
+  async login(@Body() body: { username?: string; email?: string; password?: string }, @Res({ passthrough: true }) res: Response) {
     const { accessToken, cookie } = await this.auth.login(body);
     res.setHeader("Set-Cookie", cookie);
     return { ok: true, access_token: accessToken };
