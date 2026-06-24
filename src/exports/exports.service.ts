@@ -7,11 +7,15 @@ import { parseFilters } from "../lib/query";
 
 @Injectable()
 export class ExportsService {
-  async cdr(user: CurrentUser, req: Request) {
+  async cdrRows(user: CurrentUser, req: Request) {
     const filters = parseFilters(req);
     filters.page_size = 10000;
     const data = await metricsRecords(user, filters);
-    return toCsv(data.rows as Record<string, unknown>[]);
+    return data.rows as Record<string, unknown>[];
+  }
+
+  async cdr(user: CurrentUser, req: Request) {
+    return toCsv(await this.cdrRows(user, req));
   }
 
   async branchHealth(user: CurrentUser, req: Request) {
