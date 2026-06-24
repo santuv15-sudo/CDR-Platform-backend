@@ -388,6 +388,19 @@ export async function ingestCdr(
       }
     }
 
+    // Hunt Group: any CDR user name starting with "Hunt", or a synthetic "HG-Seat" /
+    // "HG Seat" hunt-group seat row, rolls up to the Hunt Group. Prefer the "Hunt Group"
+    // staff so the calls carry an agent; otherwise fall back to just the "Hunt" branch.
+    if (!resolvedStaff && hgBranchId === null && userVal && /^(hunt|hg[-\s]?seat)/i.test(userVal.trim())) {
+      const hgStaff = staffRows.find((s) => norm(s.name) === "hunt group");
+      if (hgStaff) {
+        resolvedStaff = hgStaff;
+      } else {
+        const hb = branchByNorm.find((x) => x.norm === "hunt");
+        if (hb) { hgBranchId = hb.id; hgDmId = hb.dm_id; }
+      }
+    }
+
     const staff = resolvedStaff ?? (hgBranchId === null
       ? findStaff(userVal, direction === "Inbound" ? called ?? "" : calling ?? "", staffRows)
       : null);
@@ -401,6 +414,14 @@ export async function ingestCdr(
         message: "CDR user could not be mapped to active staff.",
         payload: issuePayload(r),
       });
+    }
+
+    // Hard rule: any CDR name containing both "4333" and "Kedzie" belongs to Archer,
+    // overriding the branch from normal resolution (the matched staff_id is preserved).
+    let forceBranchId: number | null = null, forceDmId: number | null = null;
+    if (userVal && /4333/.test(userVal) && /kedzie/i.test(userVal)) {
+      const ar = branchByNorm.find((x) => x.norm === "archer");
+      if (ar) { forceBranchId = ar.id; forceDmId = ar.dm_id; }
     }
 
     const sourceDate = cell(r, cols.source_file).slice(0, 10) || fileName.slice(0, 10);
@@ -426,8 +447,8 @@ export async function ingestCdr(
       calling_tn: calling,
       called_tn: called,
       staff_id: staff?.id ?? null,
-      branch_id: staff?.branch_id ?? hgBranchId ?? null,
-      dm_id: staff?.dm_id ?? hgDmId ?? null,
+      branch_id: forceBranchId ?? staff?.branch_id ?? hgBranchId ?? null,
+      dm_id: forceDmId ?? staff?.dm_id ?? hgDmId ?? null,
       source_file: fileName,
       batch_id: batchId,
       raw_user_name: userVal || null,
