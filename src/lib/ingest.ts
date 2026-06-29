@@ -401,9 +401,34 @@ export async function ingestCdr(
       }
     }
 
-    const staff = resolvedStaff ?? (hgBranchId === null
+    let staff = resolvedStaff ?? (hgBranchId === null
       ? findStaff(userVal, direction === "Inbound" ? called ?? "" : calling ?? "", staffRows)
       : null);
+
+    // Numbered-name fallback: a still-unmapped CDR name ending in One/Two/Three/Four/Five
+    // that contains a branch name maps to the agent at that branch's matching position
+    // extension (e.g. "Cicero5303Cermak Two" -> Cicero's …2 extension agent). Mirrors the
+    // spreadsheet's position-to-extension convention. Known names still resolve by alias above.
+    if (!staff && hgBranchId === null && userVal) {
+      const pm = userVal.trim().match(/(one|two|three|four|five)\s*$/i);
+      if (pm) {
+        const posMap: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5 };
+        const posn = posMap[pm[1].toLowerCase()];
+        const un = norm(userVal).replace(/\s+/g, "");
+        const br = branchByNorm.find((x) => x.norm.length >= 3 && un.includes(x.norm));
+        if (br) {
+          const agents = staffRows.filter((s) => s.branch_id === br.id && /^\d{5}$/.test(s.extension ?? "") && norm(s.name) !== "main");
+          const counts = new Map<string, number>();
+          for (const s of agents) { const p = (s.extension ?? "").slice(0, 4); counts.set(p, (counts.get(p) ?? 0) + 1); }
+          let pref = "", best = 0;
+          for (const [p, c] of counts) if (c > best) { best = c; pref = p; }
+          const ag = pref ? agents.find((s) => s.extension === pref + String(posn)) : undefined;
+          if (ag) staff = ag;
+          else { hgBranchId = br.id; hgDmId = br.dm_id; }
+        }
+      }
+    }
+
     if (!staff && hgBranchId === null) {
       unmapped++;
       pushIssue({
