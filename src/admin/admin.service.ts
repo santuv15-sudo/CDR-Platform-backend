@@ -268,7 +268,7 @@ export class AdminService {
     if (missing === "district") {
       return sql`
         SELECT raw_user_name AS name, count(*)::int AS calls,
-               (array_agg(COALESCE(calling_tn, called_tn)))[1] AS sample_tn
+               mode() WITHIN GROUP (ORDER BY CASE WHEN direction = 'Inbound' THEN called_tn ELSE calling_tn END) AS sample_tn
         FROM cdr_records
         WHERE deleted_at IS NULL AND branch_id IS NULL AND raw_user_name IS NOT NULL
         GROUP BY raw_user_name ORDER BY calls DESC LIMIT 500
