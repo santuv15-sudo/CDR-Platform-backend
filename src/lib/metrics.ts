@@ -456,7 +456,7 @@ export async function metricsFilterOptions(user: CurrentUser) {
   const sql = db();
   const scope = cdrWhere(sql, user, {
     branch_id: null, dm_id: null, staff_id: null, start: null, end: null, date: null,
-    direction: null, outcome: null, search: null, page: 1, page_size: 50,
+    direction: null, outcome: null, search: null, mapping: null, page: 1, page_size: 50,
   });
   const [dates, dms, branches, staff] = await Promise.all([
     sql`SELECT DISTINCT to_char(call_date, 'YYYY-MM-DD') AS call_date FROM cdr_records c WHERE ${scope} AND call_date IS NOT NULL ORDER BY 1 DESC`,

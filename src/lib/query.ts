@@ -11,6 +11,8 @@ export interface MetricFilters {
   direction: string | null;
   outcome: string | null;
   search: string | null;
+  /** Mapping-status filter: "nodistrict" | "nostaff" | "unmapped" (no staff or no branch). */
+  mapping: string | null;
   page: number;
   page_size: number;
 }
@@ -56,6 +58,7 @@ export function parseFilters(req: Request | RequestUrlLike): MetricFilters {
     direction: url.searchParams.get("direction"),
     outcome: url.searchParams.get("outcome"),
     search: url.searchParams.get("search"),
+    mapping: url.searchParams.get("mapping"),
     page: Math.max(1, intParam(url, "page") ?? 1),
     page_size: Math.min(200, Math.max(10, intParam(url, "page_size") ?? 50)),
   };
@@ -83,6 +86,9 @@ export function cdrWhere(sql: Sql, user: CurrentUser, f: MetricFilters, alias = 
   if (f.outcome === "answered") conditions.push(sql`${a}.answered = true`);
   if (f.outcome === "missed") conditions.push(sql`${a}.direction = 'Inbound' AND ${a}.answered = false`);
   if (f.outcome === "noresp") conditions.push(sql`${a}.direction = 'Outbound' AND ${a}.answered = false`);
+  if (f.mapping === "nodistrict") conditions.push(sql`${a}.branch_id IS NULL`);
+  else if (f.mapping === "nostaff") conditions.push(sql`${a}.staff_id IS NULL`);
+  else if (f.mapping === "unmapped") conditions.push(sql`(${a}.staff_id IS NULL OR ${a}.branch_id IS NULL)`);
   if (f.search) {
     const like = `%${f.search}%`;
     conditions.push(sql`(
