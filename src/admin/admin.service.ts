@@ -43,6 +43,18 @@ type MappingBody = {
 
 @Injectable()
 export class AdminService {
+  /** Pick a staff_id for a user account: an explicit id wins; otherwise match an active staff by exact name. */
+  private async resolveStaffId(explicit: number | null | undefined, name?: string): Promise<number | null> {
+    if (explicit != null) return explicit;
+    if (!name?.trim()) return null;
+    const rows = await db()`
+      SELECT id FROM staff
+      WHERE lower(btrim(name)) = lower(btrim(${name})) AND active = true
+      ORDER BY id LIMIT 1
+    `;
+    return rows.length ? (rows[0].id as number) : null;
+  }
+
   async listUsers() {
     return db()`
       SELECT u.id, u.email, u.username, u.name, u.role, u.staff_id, u.branches_managed,
@@ -62,11 +74,12 @@ export class AdminService {
     const dup = await db()`SELECT 1 FROM app_users WHERE lower(username) = ${username} LIMIT 1`;
     if (dup.length) throw new BadRequestException(`Username "${username}" already exists`);
     const hash = await bcrypt.hash(body.password, 10);
+    const staffId = await this.resolveStaffId(body.staff_id, body.name);
     const rows = await db()`
       INSERT INTO app_users (email, username, password_hash, name, role, staff_id, branches_managed, page_access, active)
       VALUES (
         ${body.email?.trim().toLowerCase() || null}, ${username}, ${hash}, ${body.name}, ${body.role}::user_role,
-        ${body.staff_id ?? null}, ${body.branches_managed ?? []}, ${cleanPages(body.page_access)}, ${body.active ?? true}
+        ${staffId}, ${body.branches_managed ?? []}, ${cleanPages(body.page_access)}, ${body.active ?? true}
       )
       RETURNING id
     `;
@@ -84,6 +97,7 @@ export class AdminService {
     }
     const pages = body.page_access !== undefined ? cleanPages(body.page_access) : null;
     const hash = body.password ? await bcrypt.hash(body.password, 10) : null;
+    const staffId = await this.resolveStaffId(body.staff_id, body.name);
     await db()`
       UPDATE app_users
       SET email = COALESCE(${body.email ?? null}, email),
@@ -91,7 +105,7 @@ export class AdminService {
           password_hash = COALESCE(${hash}, password_hash),
           name = COALESCE(${body.name ?? null}, name),
           role = COALESCE(${body.role ?? null}::user_role, role),
-          staff_id = ${body.staff_id ?? null},
+          staff_id = COALESCE(${staffId}, staff_id),
           branches_managed = COALESCE(${body.branches_managed ?? null}, branches_managed),
           page_access = COALESCE(${pages}::text[], page_access),
           active = COALESCE(${body.active ?? null}, active),
