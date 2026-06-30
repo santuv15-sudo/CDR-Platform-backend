@@ -391,7 +391,7 @@ export async function ingestCdr(
     // Hunt Group: any CDR user name starting with "Hunt", or a synthetic "HG-Seat" /
     // "HG Seat" hunt-group seat row, rolls up to the Hunt Group. Prefer the "Hunt Group"
     // staff so the calls carry an agent; otherwise fall back to just the "Hunt" branch.
-    if (!resolvedStaff && hgBranchId === null && userVal && /^(hunt|hg[-\s]?seat)/i.test(userVal.trim())) {
+    if (!resolvedStaff && hgBranchId === null && userVal && /^(hunt|hg[-\s]?(seat|hunt))/i.test(userVal.trim())) {
       const hgStaff = staffRows.find((s) => norm(s.name) === "hunt group");
       if (hgStaff) {
         resolvedStaff = hgStaff;

@@ -461,7 +461,7 @@ export async function metricsFilterOptions(user: CurrentUser) {
   const [dates, dms, branches, staff] = await Promise.all([
     sql`SELECT DISTINCT to_char(call_date, 'YYYY-MM-DD') AS call_date FROM cdr_records c WHERE ${scope} AND call_date IS NOT NULL ORDER BY 1 DESC`,
     sql`SELECT DISTINCT dm.id, dm.name FROM cdr_records c JOIN district_managers dm ON dm.id = c.dm_id WHERE ${scope} ORDER BY dm.name`,
-    sql`SELECT DISTINCT b.id, b.name, b.dm_id FROM cdr_records c JOIN branches b ON b.id = c.branch_id WHERE ${scope} ORDER BY b.name`,
+    sql`SELECT DISTINCT b.id, b.name, b.dm_id FROM cdr_records c JOIN branches b ON b.id = c.branch_id WHERE ${scope} ORDER BY b.id`,
     sql`SELECT DISTINCT s.id, s.name, s.branch_id, s.dm_id FROM cdr_records c JOIN staff s ON s.id = c.staff_id WHERE ${scope} ORDER BY s.name`,
   ]);
   return { dates, dms, branches, staff };
