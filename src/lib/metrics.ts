@@ -99,7 +99,7 @@ export async function metricsAnalytics(user: CurrentUser, f: MetricFilters) {
   // Analytics shows both directions side by side, so ignore any direction filter.
   const where = cdrWhere(sql, user, { ...f, direction: null });
 
-  const [inOut, outOut, lin, lout, topIn, topOut] = await Promise.all([
+  const [inOut, outOut, lin, lout, topIn, topOut, agentIn, agentOut] = await Promise.all([
     sql`SELECT
           count(*)::int AS total,
           count(*) FILTER (WHERE answered)::int AS answered,
@@ -111,13 +111,13 @@ export async function metricsAnalytics(user: CurrentUser, f: MetricFilters) {
           count(*) FILTER (WHERE answered)::int AS answered,
           count(*) FILTER (WHERE NOT answered)::int AS no_response
         FROM cdr_records c WHERE ${where} AND c.direction = 'Outbound'::call_direction`,
-    sql`SELECT c.duration_secs::int AS duration_secs, c.calling_tn AS external_tn,
-          to_char(c.call_date, 'YYYY-MM-DD') AS call_date, s.name AS staff_name
+    sql`SELECT c.duration_secs::int AS duration_secs, c.calling_tn, c.called_tn,
+          to_char(c.call_date, 'YYYY-MM-DD') AS call_date, s.name AS staff_name, c.raw_user_name
         FROM cdr_records c LEFT JOIN staff s ON s.id = c.staff_id
         WHERE ${where} AND c.direction = 'Inbound'::call_direction
         ORDER BY c.duration_secs DESC NULLS LAST LIMIT 1`,
-    sql`SELECT c.duration_secs::int AS duration_secs, c.called_tn AS external_tn,
-          to_char(c.call_date, 'YYYY-MM-DD') AS call_date, s.name AS staff_name
+    sql`SELECT c.duration_secs::int AS duration_secs, c.calling_tn, c.called_tn,
+          to_char(c.call_date, 'YYYY-MM-DD') AS call_date, s.name AS staff_name, c.raw_user_name
         FROM cdr_records c LEFT JOIN staff s ON s.id = c.staff_id
         WHERE ${where} AND c.direction = 'Outbound'::call_direction
         ORDER BY c.duration_secs DESC NULLS LAST LIMIT 1`,
@@ -133,6 +133,18 @@ export async function metricsAnalytics(user: CurrentUser, f: MetricFilters) {
         FROM cdr_records c LEFT JOIN branches b ON b.id = c.branch_id
         WHERE ${where} AND c.direction = 'Outbound'::call_direction AND c.called_tn IS NOT NULL AND c.called_tn <> ''
         GROUP BY c.called_tn ORDER BY total_dur DESC NULLS LAST LIMIT 10`,
+    sql`SELECT COALESCE(s.name, c.raw_user_name, 'Unmapped') AS tn, count(*)::int AS calls,
+          sum(c.duration_secs)::bigint AS total_dur, round(avg(c.duration_secs))::int AS avg_dur,
+          max(c.duration_secs)::int AS max_dur, string_agg(DISTINCT b.name, ', ') AS branches
+        FROM cdr_records c LEFT JOIN staff s ON s.id = c.staff_id LEFT JOIN branches b ON b.id = c.branch_id
+        WHERE ${where} AND c.direction = 'Inbound'::call_direction
+        GROUP BY COALESCE(s.name, c.raw_user_name, 'Unmapped') ORDER BY total_dur DESC NULLS LAST LIMIT 10`,
+    sql`SELECT COALESCE(s.name, c.raw_user_name, 'Unmapped') AS tn, count(*)::int AS calls,
+          sum(c.duration_secs)::bigint AS total_dur, round(avg(c.duration_secs))::int AS avg_dur,
+          max(c.duration_secs)::int AS max_dur, string_agg(DISTINCT b.name, ', ') AS branches
+        FROM cdr_records c LEFT JOIN staff s ON s.id = c.staff_id LEFT JOIN branches b ON b.id = c.branch_id
+        WHERE ${where} AND c.direction = 'Outbound'::call_direction
+        GROUP BY COALESCE(s.name, c.raw_user_name, 'Unmapped') ORDER BY total_dur DESC NULLS LAST LIMIT 10`,
   ]);
 
   return {
@@ -141,6 +153,8 @@ export async function metricsAnalytics(user: CurrentUser, f: MetricFilters) {
     longest_outbound: lout[0] ?? null,
     top_duration_inbound: topIn,
     top_duration_outbound: topOut,
+    top_agent_inbound: agentIn,
+    top_agent_outbound: agentOut,
   };
 }
 
